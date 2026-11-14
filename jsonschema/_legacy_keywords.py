@@ -111,9 +111,9 @@ def items_draft3_draft4(validator, items, instance, schema):
 
 
 def additionalItems(validator, aI, instance, schema):
-    if not validator.is_type(instance, "array") or validator.is_type(
+    if not validator.is_type(instance, "array") or not validator.is_type(
         schema.get("items", {}),
-        "object",
+        "array",
     ):
         return
 
@@ -292,7 +292,11 @@ def find_evaluated_item_indexes_by_schema(validator, instance, schema):
         if "additionalItems" in schema:
             return list(range(len(instance)))
 
-        if validator.is_type(schema["items"], "object"):
+        # A single subschema form of ``items`` -- including the boolean
+        # schemas ``True`` and ``False`` -- evaluates every item, so
+        # every index counts as evaluated regardless of validation
+        # outcome. Only the tuple form leaves any items unevaluated.
+        if not validator.is_type(schema["items"], "array"):
             return list(range(len(instance)))
         evaluated_indexes += list(range(len(schema["items"])))
 
@@ -349,9 +353,25 @@ def unevaluatedItems_draft2019(validator, unevaluatedItems, instance, schema):
         for index, item in enumerate(instance)
         if index not in evaluated_item_indexes
     ]
-    if unevaluated_items:
+    if not unevaluated_items:
+        return
+
+    if unevaluatedItems is True:
+        return
+
+    if unevaluatedItems is False:
         error = "Unevaluated items are not allowed (%s %s unexpected)"
         yield ValidationError(error % _utils.extras_msg(unevaluated_items))
+        return
+
+    for index, item in enumerate(instance):
+        if index not in evaluated_item_indexes:
+            yield from validator.descend(
+                item,
+                unevaluatedItems,
+                path=index,
+                schema_path=index,
+            )
 
 
 def find_evaluated_property_keys_by_schema(validator, instance, schema):

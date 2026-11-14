@@ -404,9 +404,25 @@ def unevaluatedItems(validator, unevaluatedItems, instance, schema):
         for index, item in enumerate(instance)
         if index not in evaluated_item_indexes
     ]
-    if unevaluated_items:
+    if not unevaluated_items:
+        return
+
+    if unevaluatedItems is True:
+        return
+
+    if unevaluatedItems is False:
         error = "Unevaluated items are not allowed (%s %s unexpected)"
         yield ValidationError(error % extras_msg(unevaluated_items))
+        return
+
+    for index in range(len(instance)):
+        if index not in evaluated_item_indexes:
+            yield from validator.descend(
+                instance=instance[index],
+                schema=unevaluatedItems,
+                path=index,
+                schema_path=index,
+            )
 
 
 def unevaluatedProperties(validator, unevaluatedProperties, instance, schema):

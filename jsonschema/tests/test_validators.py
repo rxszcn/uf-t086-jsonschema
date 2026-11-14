@@ -828,6 +828,300 @@ class TestValidationErrorMessages(TestCase):
         )
 
 
+class TestBooleanSchemaApplicatorKeywords(TestCase):
+    """
+    Boolean schemas (``True`` / ``False``) under the applicator keywords.
+
+    Covers the four combinations of boolean value (true / false) times
+    container type (array / object), for both the ``additional*`` family
+    and the ``unevaluated*`` family, and for both the legacy drafts and
+    the current draft. A boolean rejection must surface as a
+    `jsonschema.ValidationError`, never as an internal exception.
+    """
+
+    legacy = (
+        validators.Draft6Validator,
+        validators.Draft7Validator,
+        validators.Draft201909Validator,
+    )
+    modern = (validators.Draft201909Validator, validators.Draft202012Validator)
+
+    def assertValid(self, Validator, schema, instance):
+        errors = list(Validator(schema).iter_errors(instance))
+        self.assertEqual(errors, [])
+
+    def assertInvalid(self, Validator, schema, instance):
+        validator = Validator(schema)
+        errors = list(validator.iter_errors(instance))
+        self.assertTrue(errors, msg=f"No errors raised for {instance!r}")
+        for error in errors:
+            self.assertIsInstance(error, exceptions.ValidationError)
+        return errors
+
+    # -- arrays: unevaluatedItems with a boolean subschema ---------------
+
+    def test_unevaluatedItems_boolean_true_allows_everything(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"unevaluatedItems": True},
+                    ["foo", "bar"],
+                )
+                self.assertValid(Validator, {"unevaluatedItems": True}, [])
+
+    def test_unevaluatedItems_boolean_false_rejects_unevaluated_items(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                self.assertValid(Validator, {"unevaluatedItems": False}, [])
+                errors = self.assertInvalid(
+                    Validator,
+                    {"unevaluatedItems": False},
+                    ["foo"],
+                )
+                self.assertIn(
+                    "Unevaluated items are not allowed",
+                    errors[0].message,
+                )
+
+    def test_unevaluatedItems_ignores_non_array_instances(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"unevaluatedItems": False},
+                    "not an array",
+                )
+
+    def test_unevaluatedItems_object_subschema_still_applies(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                schema = {"unevaluatedItems": {"type": "string"}}
+                self.assertValid(Validator, schema, ["foo"])
+                errors = self.assertInvalid(Validator, schema, [42])
+                self.assertIn("is not of type 'string'", errors[0].message)
+
+    # -- arrays: boolean items together with unevaluatedItems ------------
+
+    def test_boolean_items_with_unevaluatedItems_does_not_crash(self):
+        # Regression: a boolean ``items`` paired with ``unevaluatedItems``
+        # raised "object of type 'bool' has no len()" instead of a
+        # ValidationError.
+        for Validator in (
+            validators.Draft201909Validator,
+            validators.Draft202012Validator,
+        ):
+            with self.subTest(Validator=Validator):
+                if Validator is validators.Draft201909Validator:
+                    true_schema = {"items": True, "unevaluatedItems": False}
+                    false_schema = {"items": False, "unevaluatedItems": False}
+                else:
+                    true_schema = {
+                        "prefixItems": [{}],
+                        "items": True,
+                        "unevaluatedItems": False,
+                    }
+                    false_schema = {
+                        "prefixItems": [{}],
+                        "items": False,
+                        "unevaluatedItems": False,
+                    }
+
+                self.assertValid(Validator, true_schema, ["foo", "bar"])
+                self.assertInvalid(Validator, false_schema, ["foo", "bar"])
+
+    def test_boolean_items_marks_every_index_evaluated(self):
+        # With boolean ``items`` every item is evaluated, so
+        # ``unevaluatedItems: false`` never fires on its own.
+        for Validator in (
+            validators.Draft201909Validator,
+            validators.Draft202012Validator,
+        ):
+            with self.subTest(Validator=Validator):
+                if Validator is validators.Draft201909Validator:
+                    schema = {"items": False, "unevaluatedItems": False}
+                else:
+                    schema = {
+                        "prefixItems": [{}],
+                        "items": False,
+                        "unevaluatedItems": False,
+                    }
+                errors = self.assertInvalid(Validator, schema, ["foo", "bar"])
+                self.assertEqual(
+                    {"unevaluatedItems"}
+                    & {error.validator for error in errors},
+                    set(),
+                )
+
+    def test_boolean_items_inside_applicator_with_unevaluatedItems(self):
+        schema = {
+            "allOf": [{"items": False}],
+            "unevaluatedItems": False,
+        }
+        self.assertInvalid(
+            validators.Draft201909Validator,
+            schema,
+            ["foo", "bar"],
+        )
+
+        schema = {
+            "allOf": [{"items": True}],
+            "unevaluatedItems": False,
+        }
+        self.assertValid(
+            validators.Draft201909Validator,
+            schema,
+            ["foo", "bar"],
+        )
+
+    # -- arrays: boolean items together with additionalItems -------------
+
+    def test_boolean_items_with_additionalItems_does_not_crash(self):
+        # Regression: the legacy ``additionalItems`` path called ``len()``
+        # on a boolean ``items``.
+        for Validator in self.legacy:
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"items": True, "additionalItems": False},
+                    ["foo", "bar"],
+                )
+                self.assertInvalid(
+                    Validator,
+                    {"items": False, "additionalItems": False},
+                    ["foo", "bar"],
+                )
+
+    def test_tuple_items_with_boolean_additionalItems(self):
+        for Validator in self.legacy:
+            with self.subTest(Validator=Validator):
+                schema = {"items": [{}], "additionalItems": True}
+                self.assertValid(Validator, schema, ["foo", "bar"])
+
+                schema = {"items": [{}], "additionalItems": False}
+                errors = self.assertInvalid(
+                    Validator,
+                    schema,
+                    ["foo", "bar"],
+                )
+                self.assertIn(
+                    "Additional items are not allowed",
+                    errors[0].message,
+                )
+
+    # -- objects: unevaluatedProperties with a boolean subschema ---------
+
+    def test_unevaluatedProperties_boolean_true_allows_everything(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"unevaluatedProperties": True},
+                    {"foo": "bar"},
+                )
+                self.assertValid(
+                    Validator,
+                    {"unevaluatedProperties": True},
+                    {},
+                )
+
+    def test_unevaluatedProperties_boolean_false_rejects_unevaluated(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"unevaluatedProperties": False},
+                    {},
+                )
+                errors = self.assertInvalid(
+                    Validator,
+                    {"unevaluatedProperties": False},
+                    {"foo": "bar"},
+                )
+                self.assertIn(
+                    "Unevaluated properties are not allowed",
+                    errors[0].message,
+                )
+
+    def test_unevaluatedProperties_ignores_non_object_instances(self):
+        for Validator in self.modern:
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"unevaluatedProperties": False},
+                    "not an object",
+                )
+
+    # -- objects: boolean additionalProperties ---------------------------
+
+    def test_additionalProperties_boolean_true_allows_everything(self):
+        for Validator in self.legacy + (validators.Draft202012Validator,):
+            with self.subTest(Validator=Validator):
+                self.assertValid(
+                    Validator,
+                    {"additionalProperties": True},
+                    {"foo": "bar"},
+                )
+
+    def test_additionalProperties_boolean_false_rejects_extras(self):
+        for Validator in self.legacy + (validators.Draft202012Validator,):
+            with self.subTest(Validator=Validator):
+                errors = self.assertInvalid(
+                    Validator,
+                    {"additionalProperties": False},
+                    {"foo": "bar"},
+                )
+                self.assertIn(
+                    "Additional properties are not allowed",
+                    errors[0].message,
+                )
+
+    # -- rejection always travels the validation failure channel ---------
+
+    def test_boolean_rejections_raise_ValidationError_not_internal_error(self):
+        cases = [
+            (
+                validators.Draft7Validator,
+                {"items": False, "additionalItems": False},
+                ["foo"],
+            ),
+            (
+                validators.Draft201909Validator,
+                {"items": False, "unevaluatedItems": False},
+                ["foo"],
+            ),
+            (
+                validators.Draft201909Validator,
+                {"unevaluatedItems": False},
+                ["foo"],
+            ),
+            (
+                validators.Draft202012Validator,
+                {"unevaluatedItems": False},
+                ["foo"],
+            ),
+            (
+                validators.Draft201909Validator,
+                {"unevaluatedProperties": False},
+                {"foo": "bar"},
+            ),
+            (
+                validators.Draft202012Validator,
+                {"unevaluatedProperties": False},
+                {"foo": "bar"},
+            ),
+            (
+                validators.Draft7Validator,
+                {"additionalProperties": False},
+                {"foo": "bar"},
+            ),
+        ]
+        for Validator, schema, instance in cases:
+            with self.subTest(Validator=Validator, schema=schema):
+                with self.assertRaises(exceptions.ValidationError):
+                    Validator(schema).validate(instance)
+
+
 class TestValidationErrorDetails(TestCase):
     # TODO: These really need unit tests for each individual keyword, rather
     #       than just these higher level tests.
